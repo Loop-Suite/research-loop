@@ -72,3 +72,28 @@ marketing-loop의 §4(fact-check/저널리즘, 법률검토, 학술 동료평가
 - CITETRACER의 캐스케이딩 검증 순서(캐시조회→URL fetch→커넥터→웹검색)를 `citation_status` 판정 파이프라인의 1차 참고 템플릿으로 검토.
 - MAD-Fact의 장문 사실성 평가 세부 알고리즘(claim decomposition 방식)이 공개돼 있다면 discourse 라운드 설계에 추가 반영할 가치가 있음 — 이번 조사에서는 개요만 확인, 세부 재조사 필요.
 - 상용 CI 도구(Klue/Crayon)의 "Compete Agent" 실시간 모니터링 기능은 본 설계(정적 문서 생성)의 범위 밖이나, 향후 `--watch` 모드 확장 시 참고 가능.
+
+## 8. 후속 조사: OSS 딥리서치/기업조사 에이전트 아키텍처 (2026-07-31, 구현 이후 추가조사)
+
+Rust CLI 구현을 마친 뒤, "독립 페르소나 → discourse → 결정론적 verdict" 구조가 실제로 차별화 지점인지 오픈소스 딥리서치 생태계에서 한 번 더 검증했다. citation-hallucination 인접분야(§5)보다 더 직접적으로 "경쟁사/기업 리서치 자동화"라는 research-loop과 동일한 문제를 푸는 OSS 프로젝트들을 조사 대상으로 삼았다.
+
+### 조사 대상과 아키텍처
+
+| 프로젝트 | 규모/주체 | 아키텍처 | 교차검증/discourse 유무 |
+|---|---|---|---|
+| **GPT Researcher** (assafelovic/gpt-researcher) | ~28,000★, 기여자 240명(2026 중반 기준) — OSS 딥리서치 에이전트 중 가장 널리 채택 | Planner→Executor(크롤러 에이전트)→Publisher 3단. "20개 이상 소스를 긁어 가장 빈도 높은 정보를 채택"하는 **빈도 기반(frequency-based) 검증** | **없음** — 여러 소스가 같은 말을 반복하면 신뢰, 서로 다른 관점이 충돌하며 토론하는 구조가 아님. "다 틀렸을 확률은 낮다"는 통계적 가정에 의존(반박·재측정 절차 부재) |
+| **company-research-agent** (guy-hartstein) | LangGraph 기반, Gemini 2.5 Flash + GPT-5.1 | 8노드 **순차 파이프라인**: CompanyAnalyzer/IndustryAnalyzer/FinancialAnalyst/NewsScanner(연구) → Collector/Curator/Briefing/Editor(처리). Curator가 Tavily 관련성 점수(임계값 0.4)로 필터링 | **명시적으로 없음(확인됨)** — 각 노드가 일방향으로 실행되고, Curator의 중복제거·URL dedup만 있을 뿐 사실검증이나 페르소나 간 반박 단계는 문서화돼 있지 않음. **research-loop과 도메인이 가장 가깝고 저장소도 신선한(2026년) 프로젝트인데도 discourse 구조가 전무하다는 점이 가장 직접적인 반증 사례** |
+| **DeerFlow** (ByteDance) | 대기업 OSS | 계획-실행 루프 기반 자율 조사 | 확인 안 됨(개요만 확인, 세부 미조사) |
+| **open_deep_research** (LangChain) | Deep Research Bench #6위(종합점수 0.4344) | LangGraph 기반 리서치 그래프 | 확인 안 됨 |
+| **MetaGPT** | ~50,000★, "Code = SOP(Team)" | 요구사항 입력 → 유저스토리/**경쟁분석**/데이터구조/API스펙/코드 출력까지 SOP화된 역할 분업 | 역할별 산출물 검토는 있으나 독립판정→익명토론 구조는 확인 안 됨 |
+| **Loki** (오픈소스 사실검증 툴) | 학술 도구 | 5단계: 주장식별→체크워딩(check-worthiness)판정→근거조회 쿼리생성→근거조회(Serper API)→검증 | discourse 아님, 단일 선형 파이프라인. 다만 "체크워딩 판정" 단계는 research-loop의 citation_density_check가 하지 못하는 "이 주장이 애초에 검증할 가치가 있는가"를 사전 필터링하는 아이디어로 참고 가치 있음 |
+
+### 종합 결론 (기존 §7과의 관계)
+
+- **§7의 결론이 OSS 딥리서치 생태계에서도 그대로 재확인됨**: 어떤 프로젝트도 "독립 페르소나 리뷰 → discourse 교차검증 → 결정론적 verdict" 3단 구조를 갖추지 않았다. 가장 근접한 것은 GPT Researcher의 "빈도 기반 검증"인데, 이는 능동적 반박(CHALLENGE)이 없는 수동적 합의 탐지일 뿐이다 — 여러 출처가 같은 오류를 베껴 쓴 경우(예: 이번 POS 리서치에서 실제로 발견한 "토스플레이스 30만곳" 같은 추정치가 여러 매체에 반복 인용된 사례)를 걸러내지 못한다는 구조적 약점이 있다.
+- **company-research-agent가 가장 중요한 반증 사례**: research-loop과 완전히 동일한 문제(기업 리서치 자동화)를 2026년 최신 스택(LangGraph+Gemini 2.5+GPT-5.1)으로 풀면서도 순차 파이프라인+관련성 필터링에 그친다. 이는 "discourse 구조가 아직 이 시장에 없다"는 §7 결론이 낡은 조사가 아니라 현재도 유효하다는 실측 근거다.
+- **Loki의 check-worthiness 사전필터**는 checks.rs의 `citation_density_check`(밀도만 측정, 주장의 검증가치는 안 봄)를 보강할 아이디어로 백로그에 추가할 만하다 — 미구현.
+
+### 실사용 스모크테스트로 얻은 부가 확인
+
+이 조사 직후 research-loop CLI를 실제로 빌드해 MangroveCafeOrder의 POS 경쟁사 리서치 문서(510줄, 인용 97건)에 `review`를 돌렸다. `numeric_consistency_check`가 "영업손실" 문구에 8종의 서로 다른 수치(155억/186억/490.1억/745.9억/128억 등, 각기 다른 회사·회차를 가리킴에도 동일 문구로 묶여 탐지됨)를 실제로 잡아냈고, discourse 라운드에서 "토스플레이스 30만곳(자사 발표는 20만곳, 30만은 추정)" 같은 미검증 추정치를 SURFACE로 제기했다 — GPT Researcher식 "빈도 기반 검증"이었다면 여러 2차 매체가 반복 인용한 "30만곳"을 그대로 신뢰했을 사례다. **이는 위 종합 결론(빈도 기반 검증의 구조적 약점)을 실제 산출물로 재확인한 것**이다.

@@ -56,43 +56,43 @@ marketing-loop 컨벤션(실존 인물, 해당 분야의 원칙/저작을 근거
 ## 2. spec.toml 예시
 
 ```toml
-[[persona]]
+[[lenses]]
 persona_name = "Michael Porter"
 persona_voice = "구조적 산업분석 어투. '이것이 지속 가능한 구조적 우위인가, 일시적 프로모션 우위인가'를 반복 질문. Five Forces 관점에서 진입장벽·대체재·구매자교섭력을 짚음."
 lens = "market_dynamics"
 tier = 1
 
-[[persona]]
+[[lenses]]
 persona_name = "Aswath Damodaran"
 persona_voice = "회의적·정량중심. 서사(마케팅 카피)와 숫자(감사보고서)가 어긋나는 지점을 즉각 지적. 원출처 확인 없는 재무 주장에 낮은 신뢰도 부여."
 lens = "financial_forensics"
 tier = 1
 
-[[persona]]
+[[lenses]]
 persona_name = "Patrick McKenzie"
 persona_voice = "결제산업 구조·수수료 해부 실무 어투. '이 비즈니스 모델이 규제 변화·수수료 인하에도 살아남는가'를 반복 질문."
 lens = "payments_regulatory_economics"
 tier = 1
 
-[[persona]]
+[[lenses]]
 persona_name = "Gergely Orosz"
 persona_voice = "채용공고·기술블로그 실측 기반. 근거 없는 '기술력 최고' 마케팅 주장에 회의적, 조직규모·스택을 1차 자료로 재검증."
 lens = "engineering_diligence"
 tier = 1
 
-[[persona]]
+[[lenses]]
 persona_name = "Cory Doctorow"
 persona_voice = "냉소적 구조비판. '이 후기가 누구의 이익을 위해 존재하는가'를 반복 질문. 인센티브·리뷰 프로그램의 존재 여부를 항상 먼저 확인."
 lens = "incentive_integrity"
 tier = 1
 
-[[persona]]
+[[lenses]]
 persona_name = "Adam Grant"
 persona_voice = "조직심리학 데이터 해석. 단일 리뷰 플랫폼 평점을 과신하지 말라고 경고, 표본크기·응답자편향을 반복 지적."
 lens = "org_culture_signal"
 tier = 2
 
-[[persona]]
+[[lenses]]
 persona_name = "danah boyd"
 persona_voice = "방법론적 겸손. '접근하지 못한 것'과 '존재하지 않는 것'을 반드시 구분. 폐쇄형 플랫폼 여론을 단정하는 서술에 제동."
 lens = "closed_platform_ethnography"
