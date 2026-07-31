@@ -79,21 +79,25 @@ Rust CLI 구현을 마친 뒤, "독립 페르소나 → discourse → 결정론�
 
 ### 조사 대상과 아키텍처
 
-| 프로젝트 | 규모/주체 | 아키텍처 | 교차검증/discourse 유무 |
+최초 조사는 README/랜딩페이지 기반이었다. **아래는 실제 소스 파일을 직접 읽어 재검증한 결과이며, 그 과정에서 README 서술과 실제 코드가 어긋나는 지점을 하나 발견해 정정했다** — 이 정정 자체가 "1차 자료로 재검증하라"는 research-loop의 engineering_diligence 렌즈 취지를 스스로 실천한 사례다.
+
+| 프로젝트 | 규모/주체 | 아키텍처(코드 근거) | 교차검증/discourse 유무 |
 |---|---|---|---|
-| **GPT Researcher** (assafelovic/gpt-researcher) | ~28,000★, 기여자 240명(2026 중반 기준) — OSS 딥리서치 에이전트 중 가장 널리 채택 | Planner→Executor(크롤러 에이전트)→Publisher 3단. "20개 이상 소스를 긁어 가장 빈도 높은 정보를 채택"하는 **빈도 기반(frequency-based) 검증** | **없음** — 여러 소스가 같은 말을 반복하면 신뢰, 서로 다른 관점이 충돌하며 토론하는 구조가 아님. "다 틀렸을 확률은 낮다"는 통계적 가정에 의존(반박·재측정 절차 부재) |
-| **company-research-agent** (guy-hartstein) | LangGraph 기반, Gemini 2.5 Flash + GPT-5.1 | 8노드 **순차 파이프라인**: CompanyAnalyzer/IndustryAnalyzer/FinancialAnalyst/NewsScanner(연구) → Collector/Curator/Briefing/Editor(처리). Curator가 Tavily 관련성 점수(임계값 0.4)로 필터링 | **명시적으로 없음(확인됨)** — 각 노드가 일방향으로 실행되고, Curator의 중복제거·URL dedup만 있을 뿐 사실검증이나 페르소나 간 반박 단계는 문서화돼 있지 않음. **research-loop과 도메인이 가장 가깝고 저장소도 신선한(2026년) 프로젝트인데도 discourse 구조가 전무하다는 점이 가장 직접적인 반증 사례** |
-| **DeerFlow** (ByteDance) | 대기업 OSS | 계획-실행 루프 기반 자율 조사 | 확인 안 됨(개요만 확인, 세부 미조사) |
-| **open_deep_research** (LangChain) | Deep Research Bench #6위(종합점수 0.4344) | LangGraph 기반 리서치 그래프 | 확인 안 됨 |
-| **MetaGPT** | ~50,000★, "Code = SOP(Team)" | 요구사항 입력 → 유저스토리/**경쟁분석**/데이터구조/API스펙/코드 출력까지 SOP화된 역할 분업 | 역할별 산출물 검토는 있으나 독립판정→익명토론 구조는 확인 안 됨 |
-| **Loki** (오픈소스 사실검증 툴) | 학술 도구 | 5단계: 주장식별→체크워딩(check-worthiness)판정→근거조회 쿼리생성→근거조회(Serper API)→검증 | discourse 아님, 단일 선형 파이프라인. 다만 "체크워딩 판정" 단계는 research-loop의 citation_density_check가 하지 못하는 "이 주장이 애초에 검증할 가치가 있는가"를 사전 필터링하는 아이디어로 참고 가치 있음 |
+| **GPT Researcher** (assafelovic/gpt-researcher) | ~28,000★, 기여자 240명(2026 중반 기준) — OSS 딥리서치 에이전트 중 가장 널리 채택 | **[정정]** README는 "20개 이상 소스 중 가장 빈도 높은 정보 채택"이라 서술하지만, 실제 `skills/researcher.py`·`skills/curator.py` 코드를 읽으면 다르다 — `_get_context_by_web_search()`가 서브쿼리를 병렬 수집한 뒤 `get_similar_content_by_query()`로 **벡터 임베딩 의미유사도** 기반 필터링을 하고, `curate_sources()`가 LLM 1회 호출로 관련성·신뢰성·정확성 3기준을 매겨 상위 N개만 채택한다. "빈도"가 아니라 **의미유사도 + 단일 LLM 순위매김** | **없음(코드로 확인)** — `curator.py`는 소스를 랭킹해 상위 N개를 반환할 뿐, 서로 모순되는 소스를 탐지·해소하는 로직이 없다("오류 시 원본 데이터 그대로 반환"). 여러 소스가 같은 오류를 베껴 써도 걸러낼 방법이 없다 |
+| **company-research-agent** (guy-hartstein) | LangGraph 기반, Gemini 2.5 Flash + GPT-5.1 | `backend/nodes/` 실제 파일: `grounding.py`(대상 회사 웹사이트 Tavily crawl, 최대 50페이지 — "그라운딩"이지만 사실검증이 아니라 원본자료 수집일 뿐), `collector.py`, `curator.py`(관련성 랭킹), `enricher.py`(URL별 raw content 채움, 병렬배치 처리), `briefing.py`(Gemini로 카테고리 요약), `editor.py`(GPT-5.1로 최종본 컴파일) | **명시적으로 없음(소스 3개 파일을 직접 읽어 확인)** — grounding.py·enricher.py·curator.py 어디에도 모순 탐지·교차검증 로직이 없다. **research-loop과 도메인이 완전히 같고 스택도 최신(2026)인 프로젝트조차 discourse 구조가 코드 수준에서 전무함을 직접 확인** |
+| **MetaGPT** | ~50,000★, "Code = SOP(Team)" | `actions/write_prd.py`의 `_save_competitive_analysis()`를 직접 읽음 — PRD 생성 시 함께 산출된 "COMPETITIVE_QUADRANT_CHART" 데이터를 Mermaid로 변환해 SVG로 렌더링만 함 | **없음(코드로 확인)** — 경쟁분석은 PRD 생성 단계의 **단일 LLM 호출 부산물**이며, 별도 검증·교차확인 단계 자체가 없다. 마케팅 문구("SOP화된 팀")보다 실제로는 훨씬 단순한 단일 패스 |
+| **FacTool** (GAIR-NLP, 신규 추가) | 학술 OSS | 지식기반QA/코드/수학/과학문헌 4개 도메인별로 **도구증강(tool-augmented)** 검증 — QA는 Serper 다중소스, 코드는 실제 실행 결과, 수학은 Python 실행 재검증, 논문은 원문 대조. claim-level과 response-level 이중 점수 | discourse는 없으나 **"LLM 판단이 아니라 실제 실행/원문 대조로 검증"하는 방향성**이 research-loop의 `citation_status`(현재는 discourse 페르소나 판정에 의존)를 코드 실행 기반으로 보강할 여지를 시사 — 예: 수치 주장은 인용 URL을 실제로 fetch해 문자열 대조하는 결정론적 보조 검사 추가 가능 |
+| **DeerFlow** (ByteDance) / **open_deep_research** (LangChain, Deep Research Bench #6위) | 대기업/커뮤니티 OSS | 계획-실행 루프형 리서치 그래프 | 소스코드 재검증 못함(개요만, 시간 제약) — 이번 라운드에서 검증 수준이 다른 항목들과 다르다는 점을 명시 |
+| **Loki** (오픈소스 사실검증 툴) | 학술 도구 | 5단계: 주장식별→체크워딩(check-worthiness)판정→근거조회 쿼리생성→근거조회(Serper API)→검증 | discourse 아님, 단일 선형 파이프라인. "체크워딩 판정" 단계는 참고 가치 있음(아래) |
 
-### 종합 결론 (기존 §7과의 관계)
+### 종합 결론 (기존 §7과의 관계, 소스코드 재검증 후 갱신)
 
-- **§7의 결론이 OSS 딥리서치 생태계에서도 그대로 재확인됨**: 어떤 프로젝트도 "독립 페르소나 리뷰 → discourse 교차검증 → 결정론적 verdict" 3단 구조를 갖추지 않았다. 가장 근접한 것은 GPT Researcher의 "빈도 기반 검증"인데, 이는 능동적 반박(CHALLENGE)이 없는 수동적 합의 탐지일 뿐이다 — 여러 출처가 같은 오류를 베껴 쓴 경우(예: 이번 POS 리서치에서 실제로 발견한 "토스플레이스 30만곳" 같은 추정치가 여러 매체에 반복 인용된 사례)를 걸러내지 못한다는 구조적 약점이 있다.
-- **company-research-agent가 가장 중요한 반증 사례**: research-loop과 완전히 동일한 문제(기업 리서치 자동화)를 2026년 최신 스택(LangGraph+Gemini 2.5+GPT-5.1)으로 풀면서도 순차 파이프라인+관련성 필터링에 그친다. 이는 "discourse 구조가 아직 이 시장에 없다"는 §7 결론이 낡은 조사가 아니라 현재도 유효하다는 실측 근거다.
+- **§7의 결론이 코드 수준에서 재확인됨**: GPT Researcher(curator.py)·company-research-agent(3개 노드 파일)·MetaGPT(write_prd.py) 세 프로젝트 모두 README 설명 여부와 무관하게 실제 소스에 모순탐지·교차검증 로직이 없다. "독립 페르소나 리뷰 → discourse → 결정론적 verdict" 3단 구조는 여전히 확인되지 않는다.
+- **방법론적 자기교정**: GPT Researcher를 "빈도 기반"이라고 최초 기술했던 것은 README 문구를 그대로 옮긴 것이었고, 실제 코드는 "의미유사도 벡터 필터링 + 단일 LLM 랭킹"이었다. 이 차이는 사소하지 않다 — 전자는 "다수결", 후자는 "한 번의 LLM 판단"에 가까워 오류 발생 지점이 다르다. **README만 보고 아키텍처를 단정하면 안 된다는 것을 이 조사 스스로 실증**했다.
+- **company-research-agent가 가장 중요한 반증 사례**: research-loop과 완전히 동일한 문제(기업 리서치 자동화)를 2026년 최신 스택으로 풀면서도, grounding→collect→curate→enrich→brief→edit 6단계 어디에도 반박·재측정 절차가 없음을 소스 레벨에서 확인했다.
+- **FacTool의 도구증강 검증**은 새로운 보강 아이디어다 — discourse(정성 판단)와 별개로, 수치 주장에 대해서는 인용 URL을 실제 fetch해 문자열/숫자 대조하는 **결정론적 2차 검증**을 checks.rs에 추가할 여지가 있다(미구현, 백로그).
 - **Loki의 check-worthiness 사전필터**는 checks.rs의 `citation_density_check`(밀도만 측정, 주장의 검증가치는 안 봄)를 보강할 아이디어로 백로그에 추가할 만하다 — 미구현.
 
 ### 실사용 스모크테스트로 얻은 부가 확인
 
-이 조사 직후 research-loop CLI를 실제로 빌드해 MangroveCafeOrder의 POS 경쟁사 리서치 문서(510줄, 인용 97건)에 `review`를 돌렸다. `numeric_consistency_check`가 "영업손실" 문구에 8종의 서로 다른 수치(155억/186억/490.1억/745.9억/128억 등, 각기 다른 회사·회차를 가리킴에도 동일 문구로 묶여 탐지됨)를 실제로 잡아냈고, discourse 라운드에서 "토스플레이스 30만곳(자사 발표는 20만곳, 30만은 추정)" 같은 미검증 추정치를 SURFACE로 제기했다 — GPT Researcher식 "빈도 기반 검증"이었다면 여러 2차 매체가 반복 인용한 "30만곳"을 그대로 신뢰했을 사례다. **이는 위 종합 결론(빈도 기반 검증의 구조적 약점)을 실제 산출물로 재확인한 것**이다.
+이 조사 직후 research-loop CLI를 실제로 빌드해 MangroveCafeOrder의 POS 경쟁사 리서치 문서(510줄, 인용 97건)에 `review`를 돌렸다. `numeric_consistency_check`가 "영업손실" 문구에 8종의 서로 다른 수치(155억/186억/490.1억/745.9억/128억 등, 각기 다른 회사·회차를 가리킴에도 동일 문구로 묶여 탐지됨)를 실제로 잡아냈고, discourse 라운드에서 "토스플레이스 30만곳(자사 발표는 20만곳, 30만은 추정)" 같은 미검증 추정치를 SURFACE로 제기했다. 위에서 재검증한 세 프로젝트(GPT Researcher의 벡터유사도+단일랭킹, company-research-agent의 순차 파이프라인, MetaGPT의 단일 LLM 부산물) 중 무엇을 썼어도 이런 반박·재측정 단계 없이 "여러 2차 매체가 반복 인용한 30만곳"을 그대로 채택했을 것이다 — **이는 discourse 구조의 실효성을 실제 산출물로 재확인한 것**이다.
