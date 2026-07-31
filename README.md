@@ -1,72 +1,232 @@
 # research-loop
 
-시장/경쟁사 리서치 문서를 **다각도(7페르소나) 독립 리뷰 → discourse 교차검증 → 결정론적 verdict** 로 검증하는 Rust CLI.
-LLM 백엔드는 Claude Code CLI(`claude -p`) 서브프로세스(bizplan-loop과 동일 방식). 별도 API 키 불필요.
+A Rust CLI that validates market/competitor research documents through **independent multi-persona review → discourse cross-examination → deterministic verdict**, instead of trusting a single LLM's pass over the text.
 
-계기: MangroveCafeOrder 프로젝트에서 국내 카페 POS 경쟁사(페이히어/토스플레이스/나이스포스/티오더/캐시노트)를 여러 라운드에 걸쳐 "다각도로 리서치 → 문서화 → 재조사 → 정정"한 실제 작업을 반복 가능한 파이프라인으로 일반화한 것. 그 과정에서 발견한 문제들(정량-정성 지표 불일치, 자사 발행 콘텐츠가 검색결과를 장악, 인센티브 리뷰로 인한 신뢰도 오염, 동일 지표의 회차별 수치 불일치, 이전 결론이 최신 근거로 뒤집힘)이 설계의 직접적 동기다.
+The LLM backend is a `claude -p` subprocess (Claude Code CLI) — same approach as [bizplan-loop](https://github.com/Loop-Suite/bizplan-loop). No separate API key required.
 
-> 단계별 설계 근거: **[docs/design-spec.md](docs/design-spec.md)**
-> 리서치 서베이(경쟁사 CI 자동화 지형, 인용 환각 탐지 인접분야): **[docs/research-and-evidence-survey-2026-07-31.md](docs/research-and-evidence-survey-2026-07-31.md)**
+## Why this exists
 
-## 요구사항
+This tool is the generalization of something that actually happened: across many rounds inside the MangroveCafeOrder project, a Korean café-POS competitor research document (5 companies: PayHere, Toss Place, NicePOS, T-order, CashNote) was researched, drafted, re-researched, and corrected over and over. That repeated cycle surfaced concrete failure modes that a single-pass research pipeline does not catch on its own:
 
-- Rust 1.70+
-- `claude` CLI 설치 및 로그인 (PATH에 없으면 `--claude-bin`)
+- **Quantitative vs. qualitative signals disagreeing** — an app's star rating looked fine while long-form user reviews were scathing, and vice versa.
+- **A subject's own marketing content dominating search results**, getting cited as if it were independent evidence.
+- **Paid/incentivized reviews contaminating credibility** — one competitor was found to be running a "₩5,000 per review + ₩50,000 per referred install" cash program, meaning positive-sounding blog posts about it could not be taken at face value.
+- **The same metric reappearing with different numbers across drafting rounds** (e.g., a competitor's user count cited as both 200K and 300K in different sections, sourced from different secondary articles).
+- **A prior conclusion getting reversed by newer evidence** — a "acquisition talks denied" story from mid-2025 turned into a public IP-theft dispute and layoffs by early 2026, and the document had to explicitly mark that its own earlier verdict was overturned, not just updated.
 
-## 빌드
+None of these are caught by asking one model to "review this document" once. research-loop encodes the fix as a repeatable pipeline instead of manual vigilance.
 
-```bash
-cargo build --release   # target/release/research
+> Design rationale, stage-by-stage: **[docs/design-spec.md](docs/design-spec.md)**
+> Evidence survey (competitive-intelligence tooling landscape, citation-hallucination-detection adjacent research, and a source-code-level re-verification of several open-source "deep research" agents): **[docs/research-and-evidence-survey-2026-07-31.md](docs/research-and-evidence-survey-2026-07-31.md)**
+
+## Architecture at a glance
+
+```mermaid
+flowchart TD
+    subgraph Inputs
+        DOC["Research document (Markdown)"]
+        BRIEF["Brief: angles that must be covered<br/>(optional)"]
+        STYLE["Style/tone guide<br/>(optional)"]
+        PRIOR["Prior round's state.json<br/>(optional, --prior)"]
+    end
+
+    DOC --> NORM["input::normalize<br/>extract sections, citations, word count"]
+    BRIEF --> NORM
+    STYLE --> NORM
+
+    NORM --> CHECKS["checks.rs<br/>7 deterministic checks"]
+    NORM --> SELECT["lens::select_lenses<br/>LLM picks 4-6 of 7 personas"]
+
+    SELECT --> REV1["Persona review #1<br/>(independent, sealed)"]
+    SELECT --> REV2["Persona review #2<br/>(independent, sealed)"]
+    SELECT --> REVN["Persona review #N<br/>(independent, sealed)"]
+
+    REV1 --> POOL["Findings pool<br/>(reviewer identity stripped)"]
+    REV2 --> POOL
+    REVN --> POOL
+
+    POOL --> DISCOURSE["discourse::run<br/>AGREE / CHALLENGE / CONNECT / SURFACE<br/>confidence-weighted voting"]
+    PRIOR -.-> FIXCHECK["fixcheck::run<br/>FIXED / STILL_OPEN / UNKNOWN / REVERSED"]
+    FIXCHECK -.-> DISCOURSE
+
+    DISCOURSE --> COVERAGE["requirements::verify<br/>brief angle coverage → coverage_gaps"]
+    CHECKS --> QUANT["quantify::summarize<br/>P0-P3 penalty scoring"]
+    COVERAGE --> QUANT
+    DISCOURSE --> QUANT
+
+    QUANT --> REPORT["report.md + state.json<br/>verdict: PASS or REVISE"]
 ```
 
-## 서브커맨드
+## Requirements
+
+- Rust 1.70+
+- `claude` CLI installed and logged in (pass `--claude-bin` if it's not on `PATH`)
+
+## Build
 
 ```bash
-# 1) 렌즈별 독립 리뷰 + discourse 교차검증(기본 파이프라인)
+cargo build --release   # binary at target/release/research
+```
+
+## Subcommands
+
+```bash
+# 1) Independent per-persona review + discourse cross-examination (the core pipeline)
 research --model sonnet --cheap-model haiku review \
   --spec specs/default.toml --document my-research.md \
   --brief brief.md --out runs/pos
 
-# 2) 문서 요약(핵심발견/라벨/분리가능여부) + 확인필요 마커 스캔
+# 2) Summarize the document (key findings, labels, splittability) + scan for "needs verification" markers
 research describe --spec specs/default.toml --document my-research.md --out runs/pos
 
-# 3) 개정 제안(추가조사 반영/정정)
+# 3) Propose concrete revisions (things to re-research or correct)
 research improve --spec specs/default.toml --document my-research.md --out runs/pos
 
-# 4) 자유 질의(ask.md에 누적)
-research ask --spec specs/default.toml --document my-research.md --out runs/pos "이 회사가 PCI-DSS 인증을 받았어?"
+# 4) Free-form Q&A grounded in the document, appended to ask.md
+research ask --spec specs/default.toml --document my-research.md --out runs/pos \
+  "Did this company obtain PCI-DSS certification?"
 ```
 
-## 실사용 스모크테스트
+## Execution flow of a `review` run
 
-이 리서치를 낳은 실제 문서(MangroveCafeOrder의 POS 경쟁사 리서치, 510줄)로 `describe`를 돌려 검증했다 —
-핵심발견 10개, 15개 섹션 커버리지, "확인필요" 마커 1건을 정확히 뽑아냈다.
+```mermaid
+sequenceDiagram
+    participant CLI as research review
+    participant Spec as spec::load
+    participant Input as input::normalize
+    participant Checks as checks::run_all
+    participant Lens as lens::select_lenses /<br/>review_lens (parallel)
+    participant Discourse as discourse::run
+    participant Fix as fixcheck::run
+    participant Cov as requirements::verify
+    participant Report as report::write
 
-## 결정론적 검사 (`checks.rs`)
+    CLI->>Spec: load TOML persona pool
+    CLI->>Input: read document, extract sections & citations
+    CLI->>Checks: run 7 deterministic checks
+    CLI->>Lens: pick 4-6 personas for this document
+    par independent, sealed reviews
+        Lens->>Lens: Persona A reviews (no visibility into B, C...)
+        Lens->>Lens: Persona B reviews
+        Lens->>Lens: Persona N reviews
+    end
+    Lens-->>CLI: findings pool (identities stripped)
+    opt --prior <run-dir> supplied
+        CLI->>Fix: recheck previously CONFIRMED findings
+        Fix-->>CLI: FIXED / STILL_OPEN / UNKNOWN / REVERSED
+    end
+    CLI->>Discourse: anonymous cross-examination rounds
+    Discourse-->>CLI: CONFIRMED / REJECTED / MERGED / UNCERTAIN
+    opt --brief supplied
+        CLI->>Cov: verify brief angles against confirmed findings
+        Cov-->>CLI: coverage_gaps
+    end
+    CLI->>Report: assemble report.md + state.json
+    Report-->>CLI: verdict = PASS or REVISE
+```
 
-codereview-loop의 policy.rs+semgrep.rs를 통합했다 — 리서치 도메인엔 "외부 결정론 도구가 자동으로 채워주는 만능 스캐너"(semgrep 대응물)가 없어서 두 모듈로 나눌 이유가 없다는 판단(docs/design-spec.md §3).
+## Persona pool (7 lenses)
 
-| check | 하는 일 |
+Each lens is voiced by a real analyst/author to suppress sycophancy — the model is told *who* it is arguing as, not just given a topic.
+
+```mermaid
+graph TD
+    classDef tier1 fill:#2b6cb0,color:#fff,stroke:#1a4971
+    classDef tier2 fill:#718096,color:#fff,stroke:#4a5568
+
+    MD["market_dynamics<br/>Michael Porter<br/>structural vs. transient advantage"]:::tier1
+    FF["financial_forensics<br/>Aswath Damodaran<br/>narrative must match the numbers"]:::tier1
+    PR["payments_regulatory_economics<br/>Patrick McKenzie<br/>does the model survive fee regulation?"]:::tier1
+    ED["engineering_diligence<br/>Gergely Orosz<br/>verify via job postings & eng blogs"]:::tier1
+    II["incentive_integrity<br/>Cory Doctorow<br/>whose interest does this review serve?"]:::tier1
+    OC["org_culture_signal<br/>Adam Grant<br/>don't over-trust a single review platform"]:::tier2
+    CP["closed_platform_ethnography<br/>danah boyd<br/>'couldn't access' ≠ 'doesn't exist'"]:::tier2
+
+    subgraph RT["research-type → lens selection"]
+        RT1["competitor_landscape"] --> MD & FF & ED & II
+        RT2["financial_diligence"] --> FF & MD & PR
+        RT3["market_sizing"] --> MD & PR & FF
+        RT4["org_and_culture"] --> OC & ED & II
+        RT5["community_sentiment"] --> II & CP & OC
+        RT6["full_deep_dive"] --> MD & FF & PR & ED & II & OC & CP
+    end
+```
+
+## Discourse: how findings get confirmed or rejected
+
+Reviewer identity is deliberately stripped before the discourse round — knowing *which* persona raised a finding can make agreement about authority rather than evidence.
+
+```mermaid
+stateDiagram-v2
+    [*] --> UNRESOLVED: finding raised by a lens
+    UNRESOLVED --> CONFIRMED: net confidence-weighted vote >= 0.6
+    UNRESOLVED --> REJECTED: net confidence-weighted vote <= -0.6
+    UNRESOLVED --> UNCERTAIN: vote in between, rounds exhausted
+    UNCERTAIN --> CONFIRMED: later round tips the vote
+    UNCERTAIN --> REJECTED: later round tips the vote
+    CONFIRMED --> [*]: appears in report.md findings table
+
+    state "Next round only, via --prior" as NextRound {
+        CONFIRMED --> FIXED: document addressed it
+        CONFIRMED --> STILL_OPEN: unaddressed, re-enters this round's findings
+        CONFIRMED --> REVERSED: newer evidence overturns the prior conclusion itself
+        CONFIRMED --> UNKNOWN: cannot tell either way
+    }
+```
+
+`REVERSED` is a research-loop addition that codereview-loop's fixcheck doesn't have — it exists specifically for the "prior conclusion overturned by newer evidence" failure mode (the acquisition-talks-to-IP-dispute example above). `STILL_OPEN` and `REVERSED` both re-enter the current round's findings; only `FIXED` and `UNKNOWN` drop out.
+
+Valid `CHALLENGE` moves are also narrower than in codereview-loop: a challenge only counts if it **re-measures the same metric via a different method or an independent source** and finds a discrepancy. A challenge like "this feels outdated" with no counter-evidence is downgraded to `SURFACE` instead of counting toward the required per-round challenge.
+
+## Deterministic checks (`checks.rs`)
+
+codereview-loop splits this into `policy.rs` + `semgrep.rs`. Research documents have no equivalent of an "auto-fill everything" scanner like semgrep, so there was no reason to keep two modules — they're merged into one.
+
+```mermaid
+flowchart LR
+    DOC["Normalized document<br/>+ citations list"] --> C1["citation_density_check<br/>claims vs. citation count"]
+    DOC --> C2["source_diversity_check<br/>% citations on subject-owned domains"]
+    DOC --> C3["numeric_consistency_check<br/>same phrase, conflicting figures"]
+    DOC --> C4["staleness_flag<br/>citation year vs. threshold"]
+    DOC --> C5["incentive_disclosure_scan<br/>'review event' / 'sponsorship' keywords"]
+    DOC --> C6["access_limitation_disclosure_check<br/>honest 'could not verify' phrasing present"]
+    DOC --> C7["dead_link_check<br/>real HTTP HEAD/GET via ureq"]
+
+    C1 & C2 & C3 & C4 & C5 & C6 & C7 --> RESULT["PASS / WARN / FAIL / N-A / NOT_CONFIGURED<br/>+ evidence string"]
+    RESULT --> REPORTOUT["report.md → Deterministic checks table"]
+```
+
+| check | what it does |
 |---|---|
-| citation_density_check | 주장 문장 대비 인용 밀도 |
-| source_diversity_check | 인용 중 리서치 대상 기업 자사도메인 비중 |
-| numeric_consistency_check | 동일 문구에 서로 다른 수치가 반복되는지(휴리스틱) |
-| staleness_flag | 임계값보다 오래된 연도 인용 여부 |
-| incentive_disclosure_scan | 리뷰이벤트/협찬 등 인센티브 키워드 |
-| access_limitation_disclosure_check | "확인 안 됨"류 정직 표기 존재 여부 |
-| dead_link_check | 인용 URL 실제 HTTP 요청(ureq)으로 응답 확인 — `--skip-link-check`로 생략 가능 |
+| `citation_density_check` | claim-sentence count vs. citation count |
+| `source_diversity_check` | share of citations pointing at domains the research *subject* itself owns |
+| `numeric_consistency_check` | flags the same short phrase appearing with different numbers in different sections (heuristic, WARN only) |
+| `staleness_flag` | flags citation years older than a configurable threshold |
+| `incentive_disclosure_scan` | flags "review event / sponsorship / cash reward" language for downstream discourse review |
+| `access_limitation_disclosure_check` | checks the document actually says "could not verify" somewhere, rather than staying silent about access limits |
+| `dead_link_check` | makes a real HTTP request (via `ureq`) per citation URL; timeouts are `WARN`, not `FAIL` — "unreachable" and "dead" are kept distinct. Skippable with `--skip-link-check` |
 
-## discourse CHALLENGE 조건 (원본과의 핵심 차이)
+## Validated on a real 510-line document
 
-codereview-loop은 "근거·반례·범위 등 반박"이면 CHALLENGE로 인정하지만, research-loop은 **"동일 지표를 다른 방법론/다른 소스로 재측정해 수치·주장 불일치를 제기"하는 경우로만 좁힌다**(docs/design-spec.md §4). 근거 없는 취향 반박("오래된 것 같다")은 SURFACE로 강등된다.
+Before shipping, this was run against the actual research document that motivated it (MangroveCafeOrder's POS-competitor research, 510 lines, 97 citations):
 
-## 한계 · 가정
+- `describe` correctly extracted 10 key findings, all 15 sections, and 1 real "needs verification" marker.
+- `review` (2 lenses: `financial_forensics`, `incentive_integrity`) produced `verdict=PASS score=95/100`, and along the way:
+  - `numeric_consistency_check` actually caught 8 conflicting figures behind the phrase "operating loss" (₩15.5B / ₩18.6B / ₩49.01B / ₩74.59B / ₩12.8B — each figure was correct for a *different* company/round, but the check correctly flagged that they needed disambiguating).
+  - the discourse round surfaced an unverified estimate ("Toss Place: 300K installed stores") that the company's own official figure put at 200K — something a frequency-based "most-repeated-figure-wins" approach (see below) would have missed, since several secondary articles had already repeated the higher, unofficial number.
 
-- LLM 점수는 실제 사실검증이 아니다 — 정성 판단 보조용. `citation_status`(VERIFIED/UNVERIFIED/STALE/CONTRADICTED)는 discourse 라운드의 페르소나 판정에 의존하며, CITETRACER류 캐스케이딩 자동검증은 미구현(docs §7).
-- `numeric_consistency_check`는 형태소 분석이 아닌 어절 윈도 정규식이라 오탐/누락 가능 — WARN일 뿐 FAIL로 쓰지 않는다.
-- 생성 모델과 채점 모델이 같으면 자기 문체를 후하게 본다 — `--cheap-model` 미지정 시에도 경고는 아직 없음(bizplan-loop과 달리 미구현, 추후 보강 여지).
-- human-voice 리라이트 단계는 없음(리서치 문서는 톤 재작성이 목적이 아니라는 설계 판단, docs §0).
+## It was checked against real open-source competitors, at the source-code level
 
-## 원본
+The evidence survey didn't stop at README pages. Reading actual source files in `assafelovic/gpt-researcher`, `guy-hartstein/company-research-agent`, and `geekan/MetaGPT` corrected one of the survey's own earlier claims: GPT Researcher's README implies "most-frequent-info-wins" voting, but its actual `curator.py` does vector-similarity filtering plus a single LLM ranking pass — no contradiction detection either way. `company-research-agent` (2026, LangGraph + Gemini 2.5 + GPT-5.1, solving the *exact same problem* as research-loop) turned out to be a strictly sequential 6-node pipeline with zero cross-validation anywhere in its source. Full writeup, including the self-correction: [docs/research-and-evidence-survey-2026-07-31.md §8](docs/research-and-evidence-survey-2026-07-31.md).
 
-아키텍처 원본: Code-Review-Loop (Loop-Suite/codereview-loop). marketing-loop과 동일한 이식 방법론을 따른다.
+## Limitations & assumptions
+
+- LLM scoring is not ground-truth fact-checking — it's structured qualitative judgment. `citation_status` (`VERIFIED`/`UNVERIFIED`/`STALE`/`CONTRADICTED`) currently depends entirely on a persona's judgment during the discourse round; CITETRACER-style cascading automatic verification (cache → URL fetch → connector → web search) is not implemented (see docs §7).
+- `numeric_consistency_check` uses a word-window regex, not real morphological/entity parsing — expect false positives/negatives. It's `WARN`-only for exactly this reason, never `FAIL`.
+- If the generation model and the judge model are the same, it tends to rate its own writing style more favorably. Unlike bizplan-loop, research-loop doesn't yet warn when `--cheap-model` is left unset — worth adding.
+- There is no human-voice rewrite stage. Research documents aren't being rewritten for tone, so that codereview-loop stage was dropped entirely rather than adapted (see docs §0).
+- `FacTool`'s tool-augmented verification (execute code / re-run math / fetch and diff the actual source) is a promising direction not yet implemented — right now, numeric claims are only checked by an LLM persona's judgment, not by actually re-fetching the cited page and diffing the number against it.
+
+## Lineage
+
+Architecture origin: Code-Review-Loop (`Loop-Suite/codereview-loop`) — independent persona review, anonymized discourse, deterministic verdict. research-loop follows the same porting methodology as `marketing-loop`.
