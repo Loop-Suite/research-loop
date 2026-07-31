@@ -24,7 +24,7 @@ None of these are caught by asking one model to "review this document" once. res
 ## Architecture at a glance
 
 ```mermaid
-flowchart TD
+flowchart LR
     subgraph Inputs
         DOC["Research document (Markdown)"]
         BRIEF["Brief: angles that must be covered<br/>(optional)"]
@@ -132,7 +132,7 @@ sequenceDiagram
 Each lens is voiced by a real analyst/author to suppress sycophancy — the model is told *who* it is arguing as, not just given a topic.
 
 ```mermaid
-graph TD
+graph LR
     classDef tier1 fill:#2b6cb0,color:#fff,stroke:#1a4971
     classDef tier2 fill:#718096,color:#fff,stroke:#4a5568
 
@@ -160,6 +160,7 @@ Reviewer identity is deliberately stripped before the discourse round — knowin
 
 ```mermaid
 stateDiagram-v2
+    direction LR
     [*] --> UNRESOLVED: finding raised by a lens
     UNRESOLVED --> CONFIRMED: net confidence-weighted vote >= 0.6
     UNRESOLVED --> REJECTED: net confidence-weighted vote <= -0.6
