@@ -2,6 +2,9 @@
 name = "research-loop"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/Loop-Suite/research-loop"
+description = "Multi-persona review + discourse cross-examination CLI for validating market/competitor research documents"
 
 [[bin]]
 name = "research"

@@ -1,5 +1,7 @@
 # research-loop
 
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
 A Rust CLI that validates market/competitor research documents through **independent multi-persona review → discourse cross-examination → deterministic verdict**, instead of trusting a single LLM's pass over the text.
 
 The LLM backend is a `claude -p` subprocess (Claude Code CLI) — same approach as [bizplan-loop](https://github.com/Loop-Suite/bizplan-loop). No separate API key required.
