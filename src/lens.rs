@@ -34,9 +34,15 @@ pub struct Finding {
     /// 이 렌즈의 페르소나 이름(spec에 없으면 빈 문자열).
     #[serde(default)]
     pub reviewer: String,
-    /// 인용 신뢰성 판정(design-spec.md §5, §6 신규 필드). 원문 대조가 안 된 상태가 기본값.
+    /// 인용 신뢰성 판정. LLM이 채운 값을 받지만, checks::verify_citations가 실제 HTTP 재요청 +
+    /// 인용 문구 대조로 UNFETCHED|FETCH_FAILED|QUOTE_MATCHED|QUOTE_NOT_FOUND 중 하나로 덮어쓴다(#4).
+    /// LLM이 최초에 반환한 값(VERIFIED|UNVERIFIED|STALE|CONTRADICTED 스키마)은 `llm_citation_status`에
+    /// 참고용으로만 남는다 — 신뢰의 근거는 이 필드가 아니라 코드가 재산정한 citation_status다.
     #[serde(default = "unverified")]
-    pub citation_status: String, // VERIFIED|UNVERIFIED|STALE|CONTRADICTED
+    pub citation_status: String,
+    /// LLM이 최초 판정한 citation_status 원본값(참고용, report에만 advisory로 노출). 코드가 채운다.
+    #[serde(default)]
+    pub llm_citation_status: String,
 }
 
 fn unknown() -> String {

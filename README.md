@@ -89,6 +89,8 @@ research ask --spec specs/default.toml --document my-research.md --out runs/pos 
   "Did this company obtain PCI-DSS certification?"
 ```
 
+`review`'s exit code reflects the verdict so it can be used as a CI gate: `PASS` → exit `0`, `REVISE` → exit `1` (Rust-level errors, e.g. a malformed spec, also exit `1`). `describe`/`improve`/`ask` always exit `0` on success — they don't produce a verdict.
+
 ## Execution flow of a `review` run
 
 ```mermaid
@@ -224,7 +226,8 @@ The evidence survey didn't stop at README pages. Reading actual source files in 
 
 ## Limitations & assumptions
 
-- LLM scoring is not ground-truth fact-checking — it's structured qualitative judgment. `citation_status` (`VERIFIED`/`UNVERIFIED`/`STALE`/`CONTRADICTED`) currently depends entirely on a persona's judgment during the discourse round; CITETRACER-style cascading automatic verification (cache → URL fetch → connector → web search) is not implemented (see docs §7).
+- **`confidence` (high/medium/low) is an uncalibrated self-report, not a measured accuracy rate.** discourse.rs converts it to a fixed weight (`high`=1.0, `medium`=0.6, `low`=0.3) — those numbers are *not* statistically calibrated against any ground truth; they're just the model's own label, converted to a number. Real calibration would need a labeled benchmark (e.g. "of the CHALLENGEs a model tagged `high`, what fraction were actually correct?"), broken down by lens/model/error-type, and this repo has no such benchmark — so that calibration work was explicitly *not* done (tracked in issue #3, not closed). What *is* guaranteed: this confidence weighting can never override deterministic "hard evidence" — `quantify.rs::verdict()` forces `REVISE` whenever any `checks.rs` check is `FAIL`, as an independent condition that doesn't look at findings/confidence at all (locked by a unit test).
+- `citation_status` (`UNFETCHED`/`FETCH_FAILED`/`QUOTE_MATCHED`/`QUOTE_NOT_FOUND`) is now set by code, not by LLM self-report: `checks::verify_citations` re-fetches the cited URL (through the same SSRF-guarded path as `dead_link_check`) and checks whether the finding's evidence text appears in the fetched body. The model's original guess is kept for reference in `llm_citation_status` but no longer drives the report. This is still a substring match on `evidence` (the closest thing the schema has to a "quote"), not full claim entailment — a `QUOTE_MATCHED` result means the exact wording was found on the page, not that the page's *meaning* supports the claim.
 - `numeric_consistency_check` uses a word-window regex, not real morphological/entity parsing — expect false positives/negatives. It's `WARN`-only for exactly this reason, never `FAIL`.
 - If the generation model and the judge model are the same, it tends to rate its own writing style more favorably. Unlike bizplan-loop, research-loop doesn't yet warn when `--cheap-model` is left unset — worth adding.
 - There is no human-voice rewrite stage. Research documents aren't being rewritten for tone, so that codereview-loop stage was dropped entirely rather than adapted (see docs §0).

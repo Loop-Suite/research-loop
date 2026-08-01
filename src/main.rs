@@ -21,6 +21,10 @@ use llm::Llm;
 use spec::Spec;
 use std::path::PathBuf;
 
+/// #9: 프롬프트 JSON 스키마/지시문이 구조적으로 바뀔 때만 수동으로 올리는 버전 문자열.
+/// state.json에 기록되어, 과거 라운드와 비교할 때 "프롬프트 자체가 달라졌는지"를 구분하는 데 쓴다.
+const PROMPT_VERSION: &str = "1";
+
 #[derive(clap::ValueEnum, Clone, Debug, PartialEq)]
 enum Backend {
     /// claude -p 서브프로세스
@@ -134,9 +138,12 @@ enum Cmd {
 }
 
 fn main() {
-    if let Err(e) = real_main() {
-        eprintln!("에러: {e:#}");
-        std::process::exit(1);
+    match real_main() {
+        Ok(code) => std::process::exit(code),
+        Err(e) => {
+            eprintln!("에러: {e:#}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -156,7 +163,9 @@ fn build_llm(cli: &Cli) -> Result<(Llm, Llm)> {
     Ok((main_llm, cheap_llm))
 }
 
-fn real_main() -> Result<()> {
+/// PASS=0, REVISE=1(#12) — review 서브커맨드만 verdict 기반 종료 코드를 갖는다. 나머지 서브커맨드는
+/// 정상 완료 시 항상 0(에러는 이 함수가 아니라 main()의 Err 분기에서 exit(1)로 처리됨).
+fn real_main() -> Result<i32> {
     let cli = Cli::parse();
     let (llm, cheap_llm) = build_llm(&cli)?;
 
@@ -164,9 +173,18 @@ fn real_main() -> Result<()> {
         Cmd::Review { spec, document, brief, style, deterministic_results, lenses, out, concurrency, max_rounds, prior, as_of_year, skip_link_check } => {
             run_review(&llm, &cheap_llm, spec, document, brief, style, deterministic_results, lenses, out, *concurrency, *max_rounds, prior, *as_of_year, *skip_link_check)
         }
-        Cmd::Describe { spec, document, brief, style, out } => run_describe(&llm, spec, document, brief, style, out),
-        Cmd::Improve { spec, document, brief, style, out } => run_improve(&llm, spec, document, brief, style, out),
-        Cmd::Ask { spec, document, brief, style, out, question } => run_ask(&llm, spec, document, brief, style, out, question),
+        Cmd::Describe { spec, document, brief, style, out } => {
+            run_describe(&llm, spec, document, brief, style, out)?;
+            Ok(0)
+        }
+        Cmd::Improve { spec, document, brief, style, out } => {
+            run_improve(&llm, spec, document, brief, style, out)?;
+            Ok(0)
+        }
+        Cmd::Ask { spec, document, brief, style, out, question } => {
+            run_ask(&llm, spec, document, brief, style, out, question)?;
+            Ok(0)
+        }
     }
 }
 
@@ -194,9 +212,10 @@ fn run_review(
     prior: &Option<PathBuf>,
     as_of_year: Option<u32>,
     skip_link_check: bool,
-) -> Result<()> {
+) -> Result<i32> {
+    let started_at = state::unix_ts();
     let sp = Spec::load(spec_path)?;
-    let mut inp = input::normalize(document_path, brief_path, style_path, deterministic_results_path)?;
+    let inp = input::normalize(document_path, brief_path, style_path, deterministic_results_path)?;
     const DOC_WARN_CHARS: usize = 300_000;
     if inp.document.len() > DOC_WARN_CHARS {
         eprintln!(
@@ -206,10 +225,6 @@ fn run_review(
     }
 
     let as_of = as_of_year.unwrap_or_else(|| default_as_of_year(&inp.document));
-    if inp.deterministic_results.is_none() {
-        let results = checks::run_all(&sp, &inp, &checks::CheckOptions { as_of_year: as_of, skip_link_check });
-        inp.deterministic_results = Some(checks::to_json(&results));
-    }
 
     let out_dir = prepare_out(out)?;
 
@@ -268,6 +283,15 @@ fn run_review(
         discourse::run(llm, &sp, &mut findings, max_rounds)?
     };
 
+    // #4: citation_status는 LLM 자기판정을 그대로 신뢰하지 않고, 코드가 실제로 HTTP 재요청 +
+    // 인용 문구 대조를 수행해 UNFETCHED/FETCH_FAILED/QUOTE_MATCHED/QUOTE_NOT_FOUND로 덮어쓴다.
+    // LLM이 낸 원래 값은 finding.llm_citation_status에 참고용으로만 남는다.
+    checks::verify_citations(&inp, &mut findings, skip_link_check);
+
+    // #7: --prior 재검사 결과를 FIXED(닫음)/STILL_OPEN(유지)/REVERSED(신규 고위험 finding)/
+    // UNKNOWN(유지+human review 플래그) 4갈래로 명시적으로 분기한다. 예전엔 STILL_OPEN/REVERSED만
+    // 처리하고 나머지(특히 UNKNOWN)는 findings/score에서 조용히 사라졌다 — "확인 불가"를 "해결됨"처럼
+    // 취급하는 것은 안전성 문제라 UNKNOWN도 반드시 남기고 사람 확인을 요구하도록 바꿨다.
     let mut fix_results: Vec<fixcheck::FixStatus> = Vec::new();
     if let Some(ps) = &prior_state {
         let prior_confirmed: Vec<Finding> = ps
@@ -278,8 +302,14 @@ fn run_review(
             .collect();
         fix_results = fixcheck::run(cheap_llm, &sp, &inp, &prior_confirmed)?;
         for fr in &fix_results {
-            if fr.status == "STILL_OPEN" || fr.status == "REVERSED" {
-                if let Some(orig) = prior_confirmed.iter().find(|f| f.id == fr.finding_id) {
+            let Some(orig) = prior_confirmed.iter().find(|f| f.id == fr.finding_id) else {
+                continue;
+            };
+            match fr.status.as_str() {
+                "FIXED" => {
+                    // 닫음 — findings/resolved에 다시 넣지 않는다. 리포트/점수에서 자연스럽게 빠진다.
+                }
+                "STILL_OPEN" => {
                     findings.push(orig.clone());
                     resolved.insert(
                         orig.id.clone(),
@@ -287,15 +317,65 @@ fn run_review(
                             finding_id: orig.id.clone(),
                             status: "CONFIRMED".to_string(),
                             merged_into: String::new(),
-                            reason: format!("이전 라운드 대비 {}: {}", fr.status, fr.evidence),
+                            reason: format!("이전 라운드 대비 STILL_OPEN: {}", fr.evidence),
+                            needs_human_review: false,
                         },
                     );
+                }
+                "REVERSED" => {
+                    // 이전 결론 자체가 뒤집힌 경우 — 기존 finding을 그대로 재사용하지 않고,
+                    // 신규 고위험(P0) finding으로 승격해 별도 id로 남긴다.
+                    let mut reversed = orig.clone();
+                    reversed.id = format!("{}-reversed-r{}", orig.id, round);
+                    reversed.severity = "P0".to_string();
+                    reversed.evidence = format!("[REVERSED] 이전 결론이 최신 근거로 뒤집힘: {}", fr.evidence);
+                    findings.push(reversed.clone());
+                    resolved.insert(
+                        reversed.id.clone(),
+                        discourse::Resolution {
+                            finding_id: reversed.id.clone(),
+                            status: "CONFIRMED".to_string(),
+                            merged_into: String::new(),
+                            reason: format!("이전 라운드 대비 REVERSED(신규 고위험 finding으로 승격): {}", fr.evidence),
+                            needs_human_review: true,
+                        },
+                    );
+                }
+                "UNKNOWN" => {
+                    // 확인 불가 — FIXED처럼 조용히 지우지 않고 유지하되, human review 필요 플래그를 세운다.
+                    findings.push(orig.clone());
+                    resolved.insert(
+                        orig.id.clone(),
+                        discourse::Resolution {
+                            finding_id: orig.id.clone(),
+                            status: "CONFIRMED".to_string(),
+                            merged_into: String::new(),
+                            reason: format!("이전 라운드 대비 확인 불가(UNKNOWN) — 자동 해제하지 않음, 인간 확인 필요: {}", fr.evidence),
+                            needs_human_review: true,
+                        },
+                    );
+                }
+                other => {
+                    eprintln!("경고: fix check가 알 수 없는 status \"{other}\"를 반환함(finding {})", fr.finding_id);
                 }
             }
         }
     }
 
-    let checks_results = checks::run_all(&sp, &inp, &checks::CheckOptions { as_of_year: as_of, skip_link_check });
+    // #6: --deterministic-results로 외부 결과가 주어졌으면(inp.deterministic_results가 이미
+    // input::normalize 단계에서 파싱해 채워둠) 그 외부 결과를 스키마 검증 후 그대로 쓰고, 내부
+    // checks::run_all()을 다시 돌려서 덮어쓰지 않는다 — 예전엔 외부 결과가 완전히 무시되고 항상
+    // 내부 재실행 결과만 report/verdict에 반영됐다.
+    let checks_results: Vec<checks::CheckResult> = match &inp.deterministic_results {
+        Some(external) => checks::from_json(external).context("--deterministic-results 스키마 검증 실패")?,
+        None => checks::run_all(&sp, &inp, &checks::CheckOptions { as_of_year: as_of, skip_link_check }),
+    };
+    // 이번 라운드에 실제로 반영된 checks_results를 그대로 스냅샷해둔다 — 다음 실행에서
+    // `--deterministic-results runs/deterministic-results.json`으로 재사용하거나(외부 스캐너 대체),
+    // 결과를 그대로 감사할 수 있게(#6). from_json이 그대로 다시 읽을 수 있는 형식이다.
+    let det_results_path = out_dir.join("deterministic-results.json");
+    std::fs::write(&det_results_path, serde_json::to_string_pretty(&checks::to_json(&checks_results))?)
+        .with_context(|| format!("{} 쓰기 실패", det_results_path.display()))?;
 
     let confirmed_refs: Vec<&Finding> = findings
         .iter()
@@ -324,13 +404,36 @@ fn run_review(
         fix_results: &fix_results,
     })?;
 
-    state::write(&out_dir, &state::State { round, findings: findings.clone(), resolved: resolved.clone() })?;
+    // #9: RunManifest 필드(재현·감사용) — 입력/spec fingerprint, 모델/provider, 시간, 비용, 프롬프트 버전.
+    let provider_label = match &llm.provider {
+        crate::llm::Provider::ClaudeCli { .. } => "claude-cli",
+        crate::llm::Provider::OpenRouter { .. } => "openrouter",
+    };
+    let usage = llm.usage();
+    state::write(
+        &out_dir,
+        &state::State {
+            round,
+            findings: findings.clone(),
+            resolved: resolved.clone(),
+            input_hash: state::fingerprint_str(&inp.document),
+            spec_hash: state::fingerprint_str(&serde_json::to_string(&sp).unwrap_or_default()),
+            model_id: llm.model.clone().unwrap_or_default(),
+            provider: provider_label.to_string(),
+            started_at,
+            completed_at: state::unix_ts(),
+            cost_usd: usage.cost_usd,
+            prompt_version: PROMPT_VERSION.to_string(),
+        },
+    )?;
 
     println!("\n종료 — verdict={} score={}/100 coverage_gaps={}", quant.verdict, quant.score, quant.coverage_gap_count);
     println!("리포트: {}", path.display());
     println!("다음 라운드: --prior {}", out_dir.display());
     println!("{}", llm.usage().summary());
-    Ok(())
+
+    // #12: REVISE도 exit 0으로 끝나 CI 게이트로 못 쓰던 문제 — PASS만 0, 그 외(REVISE)는 1.
+    Ok(if quant.verdict == "PASS" { 0 } else { 1 })
 }
 
 fn run_describe(llm: &Llm, spec_path: &PathBuf, document_path: &PathBuf, brief_path: &Option<PathBuf>, style_path: &Option<PathBuf>, out: &PathBuf) -> Result<()> {

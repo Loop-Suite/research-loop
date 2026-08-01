@@ -97,13 +97,14 @@ pub fn write(ctx: ReportCtx) -> Result<PathBuf> {
     md.push_str(&format!("- 커버리지 갭: {}건\n\n", quant.coverage_gap_count));
 
     md.push_str("## Coverage Verification (리서치 브리프 앵글 충족 여부)\n\n");
+    md.push_str("REQ ID는 브리프를 코드가 결정론적으로 번호매김한 것 — LLM이 빠뜨린 REQ-ID는 코드가 강제로 MISSING 처리한다(#8).\n\n");
     match angles {
         None => md.push_str("(브리프 미제공 — 검증 생략)\n\n"),
         Some(list) if list.is_empty() => md.push_str("(앵글 없음)\n\n"),
         Some(list) => {
-            md.push_str("| Angle | Status | Evidence or gap |\n|---|---|---|\n");
+            md.push_str("| REQ ID | Angle | Status | Evidence or gap |\n|---|---|---|---|\n");
             for a in list {
-                md.push_str(&format!("| {} | {} | {} |\n", a.angle, a.status, a.evidence));
+                md.push_str(&format!("| {} | {} | {} | {} |\n", a.req_id, a.angle, a.status, a.evidence));
             }
             md.push('\n');
         }
@@ -122,17 +123,18 @@ pub fn write(ctx: ReportCtx) -> Result<PathBuf> {
         .collect();
     confirmed.sort_by_key(|f| severity_rank(&f.severity));
 
-    // citation_status 요약(design-spec.md §6 신규 필드) — CONFIRMED finding 기준.
+    // citation_status 요약 — 이제 LLM 자기판정이 아니라 checks::verify_citations가 실제 HTTP
+    // 재요청 + 인용 문구 대조로 코드가 직접 산정한 값이다(#4). CONFIRMED finding 기준.
     let mut citation_summary: HashMap<&str, usize> = HashMap::new();
     for f in &confirmed {
         *citation_summary.entry(f.citation_status.as_str()).or_insert(0) += 1;
     }
-    md.push_str("## Citation Status 요약\n\n");
+    md.push_str("## Citation Status 요약 (코드가 실제 원문 재요청·대조로 산정, LLM 판정 아님)\n\n");
     if citation_summary.is_empty() {
         md.push_str("(확정 finding 없음)\n\n");
     } else {
         md.push_str("| Status | Count |\n|---|---|\n");
-        for k in ["VERIFIED", "UNVERIFIED", "STALE", "CONTRADICTED"] {
+        for k in ["UNFETCHED", "FETCH_FAILED", "QUOTE_MATCHED", "QUOTE_NOT_FOUND"] {
             let n = citation_summary.get(k).copied().unwrap_or(0);
             md.push_str(&format!("| {} | {} |\n", k, n));
         }
@@ -141,14 +143,21 @@ pub fn write(ctx: ReportCtx) -> Result<PathBuf> {
 
     md.push_str("## Findings\n\n");
     md.push_str(&format!("허용 label: {}\n\n", spec.labels_prompt()));
-    md.push_str("| ID | Priority | Label | Lens | Reviewer | Section | Citation | Citation Status | Claim | Evidence | Recommendation | Discourse result |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+    md.push_str(
+        "| ID | Priority | Label | Lens | Reviewer | Section | Citation | Citation Status (code-verified) | LLM Citation Status (advisory) | Claim | Evidence | Recommendation | Discourse result |\n\
+         |---|---|---|---|---|---|---|---|---|---|---|---|---|\n",
+    );
     for f in &confirmed {
         let r = resolved.get(&f.id);
-        let discourse_result = r.map(|r| r.reason.as_str()).unwrap_or("");
+        let discourse_result = match r {
+            Some(res) if res.needs_human_review => format!("\u{26a0} HUMAN REVIEW REQUIRED — {}", res.reason),
+            Some(res) => res.reason.clone(),
+            None => String::new(),
+        };
         md.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             f.id, f.severity, f.label, f.lens, f.reviewer, f.section, f.citation_ref, f.citation_status,
-            f.claim, f.evidence, f.recommendation, discourse_result
+            f.llm_citation_status, f.claim, f.evidence, f.recommendation, discourse_result
         ));
     }
     md.push('\n');

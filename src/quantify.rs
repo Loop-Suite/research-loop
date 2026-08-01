@@ -36,17 +36,32 @@ fn score(findings: &[Finding], resolved: &HashMap<String, Resolution>) -> (i64, 
     (total.max(0), deductions)
 }
 
-/// PASS/REVISE 2상태. P0 확정 finding, 결정론 FAIL, 커버리지 갭 중 하나라도 있으면 REVISE.
+/// PASS/REVISE 2상태.
+///
+/// #3: 결정론 체크(checks.rs)의 FAIL은 "hard evidence"다 — LLM이 자기신고한 confidence(discourse.rs
+/// confidence_weight)가 아무리 높은 AGREE를 쌓아 어떤 finding을 REJECTED로 밀어내더라도, 그 finding과
+/// 무관하게 checks 자체가 FAIL이면 이 함수는 무조건 REVISE를 반환한다 — findings/resolved 상태를 전혀
+/// 참조하지 않는 독립 조건이라 confidence 가중치로 우회할 방법이 없다(quantify_tests::
+/// hard_evidence_check_fail_forces_revise_regardless_of_findings로 고정).
+///
+/// #7: needs_human_review가 선 resolution(--prior 재검사에서 UNKNOWN/REVERSED로 나온 finding)이
+/// 하나라도 있으면, 그 finding의 severity와 무관하게 REVISE — "확인 불가"를 자동으로 통과시키지 않는다.
 fn verdict(findings: &[Finding], resolved: &HashMap<String, Resolution>, checks: &[CheckResult], coverage_gap_count: usize) -> String {
+    // 1순위: 결정론 체크 FAIL — findings/confidence와 무관하게 항상 우선한다.
+    if checks.iter().any(|c| c.status == CheckStatus::Fail) {
+        return "REVISE".to_string();
+    }
+    // 2순위: 사람 확인이 필요하다고 명시적으로 플래그된 판정(#7 UNKNOWN/REVERSED).
+    if resolved.values().any(|r| r.needs_human_review) {
+        return "REVISE".to_string();
+    }
+
     let confirmed: Vec<&Finding> = findings
         .iter()
         .filter(|f| resolved.get(&f.id).map(|r| r.status.as_str()) == Some("CONFIRMED"))
         .collect();
 
     if confirmed.iter().any(|f| f.severity == "P0" || f.severity == "P1") {
-        return "REVISE".to_string();
-    }
-    if checks.iter().any(|c| c.status == CheckStatus::Fail) {
         return "REVISE".to_string();
     }
     if coverage_gap_count > 0 {
@@ -65,4 +80,53 @@ pub fn summarize(
     let (sc, deductions) = score(findings, resolved);
     let v = verdict(findings, resolved, checks, coverage_gap_count);
     QuantSummary { verdict: v, score: sc, score_deductions: deductions, coverage_gap_count }
+}
+
+#[cfg(test)]
+mod quantify_tests {
+    use super::*;
+
+    #[test]
+    fn hard_evidence_check_fail_forces_revise_regardless_of_findings() {
+        let findings: Vec<Finding> = Vec::new();
+        let resolved: HashMap<String, Resolution> = HashMap::new();
+        let checks = vec![CheckResult {
+            id: "dead_link".into(),
+            title: "인용 URL 응답 확인".into(),
+            status: CheckStatus::Fail,
+            evidence: "test".into(),
+        }];
+        let v = verdict(&findings, &resolved, &checks, 0);
+        assert_eq!(
+            v, "REVISE",
+            "결정론 체크 FAIL은 confirmed finding이 하나도 없어도(=confidence 가중치의 영향 없이) 항상 REVISE를 강제해야 한다(#3)"
+        );
+    }
+
+    #[test]
+    fn needs_human_review_forces_revise_even_for_low_severity() {
+        let findings: Vec<Finding> = Vec::new();
+        let mut resolved: HashMap<String, Resolution> = HashMap::new();
+        resolved.insert(
+            "f1".to_string(),
+            Resolution {
+                finding_id: "f1".to_string(),
+                status: "CONFIRMED".to_string(),
+                merged_into: String::new(),
+                reason: "unknown".to_string(),
+                needs_human_review: true,
+            },
+        );
+        let checks: Vec<CheckResult> = Vec::new();
+        let v = verdict(&findings, &resolved, &checks, 0);
+        assert_eq!(v, "REVISE", "needs_human_review 플래그가 선 resolution이 있으면 항상 REVISE여야 한다(#7)");
+    }
+
+    #[test]
+    fn clean_run_is_pass() {
+        let findings: Vec<Finding> = Vec::new();
+        let resolved: HashMap<String, Resolution> = HashMap::new();
+        let checks: Vec<CheckResult> = Vec::new();
+        assert_eq!(verdict(&findings, &resolved, &checks, 0), "PASS");
+    }
 }
