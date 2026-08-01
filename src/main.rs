@@ -280,7 +280,7 @@ fn run_review(
         (Vec::new(), std::collections::HashMap::new())
     } else {
         println!("discourse 시작 (최대 {}라운드)", max_rounds);
-        discourse::run(llm, &sp, &mut findings, max_rounds)?
+        discourse::run(llm, &sp, &mut findings, max_rounds, concurrency)?
     };
 
     // #4: citation_status는 LLM 자기판정을 그대로 신뢰하지 않고, 코드가 실제로 HTTP 재요청 +
@@ -480,7 +480,8 @@ fn prepare_out(p: &PathBuf) -> Result<PathBuf> {
 }
 
 /// concurrency 만큼 스레드를 묶어 순차 실행(청크 단위 배리어).
-fn par_map<T, R, F>(concurrency: usize, items: Vec<T>, f: F) -> Result<Vec<R>>
+/// discourse.rs의 렌즈별 독립 critic 호출(#1)도 이 헬퍼를 재사용한다.
+pub(crate) fn par_map<T, R, F>(concurrency: usize, items: Vec<T>, f: F) -> Result<Vec<R>>
 where
     T: Send,
     R: Send,
