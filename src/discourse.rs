@@ -53,15 +53,14 @@ pub struct Move {
 /// 실측 정확도로 보정(calibration)된 값이 아니다 — 실제 정확도를 측정하려면 렌즈·모델·오류유형별
 /// benchmark 데이터(예: "high로 표시된 CHALLENGE 중 실제로 맞았던 비율")가 필요한데, 이 저장소에는
 /// 그런 라벨링된 벤치마크가 없다. 통계적 calibration 자체는 이번 스코프에서 하지 않았다(이슈 코멘트 참조).
-/// 대신 이 값이 "hard evidence"(checks.rs의 결정론적 FAIL)를 절대 뒤집을 수 없도록
+/// 근거 없는 상수(예전 high=1.0/medium=0.6/low=0.3)로 차등 가중하는 건 실측 없이 정밀도를
+/// 가장하는 것이라, calibration 데이터가 생기기 전까지는 모든 move를 동일 가중치로 둔다
+/// (self-reported label이 실제 정확도와 상관관계가 있다는 근거가 없으므로 균등 가중이 더 안전한 기본값).
+/// 추가로 이 값이 "hard evidence"(checks.rs의 결정론적 FAIL)를 절대 뒤집을 수 없도록
 /// quantify.rs::verdict()에서 결정론 체크 FAIL을 findings/confidence와 무관한 독립 조건으로
 /// 강제한다(quantify.rs의 hard_evidence_fail 우선순위 참고, 테스트로 고정).
-fn confidence_weight(c: &str) -> f64 {
-    match c {
-        "high" => 1.0,
-        "low" => 0.3,
-        _ => 0.6, // medium 및 미기재
-    }
+fn confidence_weight(_c: &str) -> f64 {
+    1.0
 }
 
 const VOTE_THRESHOLD: f64 = 0.6;
