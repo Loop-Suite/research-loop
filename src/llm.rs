@@ -125,7 +125,10 @@ impl Llm {
                 Err(e) => last = Some(e),
             }
             if self.verbose {
-                eprintln!("[retry {}/{}] {}", attempt + 1, self.retries, last.as_ref().unwrap());
+                match last.as_ref() {
+                    Some(error) => eprintln!("[retry {}/{}] {error}", attempt + 1, self.retries),
+                    None => eprintln!("[retry {}/{}] unknown retry error", attempt + 1, self.retries),
+                }
             }
         }
         Err(last.unwrap_or_else(|| anyhow!("알 수 없는 실패")))
@@ -148,7 +151,12 @@ impl Llm {
                 Err(e) => {
                     last = Some(e);
                     if self.verbose {
-                        eprintln!("[json retry {}] {}", attempt + 1, last.as_ref().unwrap());
+                        match last.as_ref() {
+                            Some(error) => eprintln!("[json retry {}/{}] {error}", attempt + 1, self.retries),
+                            None => {
+                                eprintln!("[json retry {}/{}] unknown json retry error", attempt + 1, self.retries);
+                            }
+                        }
                     }
                     continue;
                 }
@@ -158,7 +166,12 @@ impl Llm {
                 Err(e) => {
                     last = Some(e);
                     if self.verbose {
-                        eprintln!("[json retry {}] {}", attempt + 1, last.as_ref().unwrap());
+                        match last.as_ref() {
+                            Some(error) => eprintln!("[json retry {}] {error}", attempt + 1, self.retries),
+                            None => {
+                                eprintln!("[json retry {}] unknown json retry error", attempt + 1, self.retries);
+                            }
+                        }
                     }
                 }
             }

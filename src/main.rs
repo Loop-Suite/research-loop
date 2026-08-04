@@ -487,19 +487,22 @@ where
     R: Send,
     F: Fn(T) -> Result<R> + Sync,
 {
-    let c = concurrency.max(1);
-    let mut out: Vec<R> = Vec::new();
-    let mut rest = items;
-    while !rest.is_empty() {
-        let take = c.min(rest.len());
-        let chunk: Vec<T> = rest.drain(..take).collect();
-        let results: Vec<Result<R>> = std::thread::scope(|s| {
-            let handles: Vec<_> = chunk.into_iter().map(|item| s.spawn(|| f(item))).collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
-        });
-        for r in results {
-            out.push(r?);
+        let c = concurrency.max(1);
+        let mut out: Vec<R> = Vec::new();
+        let mut rest = items;
+        while !rest.is_empty() {
+            let take = c.min(rest.len());
+            let chunk: Vec<T> = rest.drain(..take).collect();
+            let results: Vec<Result<R>> = std::thread::scope(|s| {
+                let handles: Vec<_> = chunk.into_iter().map(|item| s.spawn(|| f(item))).collect();
+                handles
+                    .into_iter()
+                    .map(|h| h.join().map_err(|_| anyhow!("worker thread panicked")))
+                    .collect()
+            });
+            for r in results {
+                out.push(r?);
+            }
         }
-    }
     Ok(out)
 }
